@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GinWS Network Test</title>
+    <style>
+        body { font-family: monospace; background: #222; color: #0f0; margin: 20px; }
+        #console { background: #000; padding: 15px; border: 1px solid #444; height: 500px; overflow-y: auto; }
+        .log-entry { margin-bottom: 5px; }
+        .success { color: #0f0; }
+        .error { color: #f00; }
+        .warn { color: #ff0; }
+    </style>
+</head>
+<body>
+    <h1>GinWS Library Test</h1>
+    <p>Check browser console (F12) for detailed logs. Using compiled lib from /dist/main.js</p>
+    <div id="console"></div>
+
+    <!-- We use type="module" because the package.json specifies "type": "module" -->
+    <script type="module" src="/dist/main.js"></script>
+
+    <script>
+        // Hook into console.log to display in our UI too
+        const consoleDiv = document.getElementById('console');
+        const oldLog = console.log;
+        const oldError = console.error;
+        const oldWarn = console.warn;
+
+        function appendToConsole(msg, type) {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            consoleDiv.appendChild(entry);
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        console.log = function(...args) {
+            appendToConsole(args.join(' '), 'info');
+            oldLog.apply(console, args);
+        };
+        console.error = function(...args) {
+            appendToConsole(args.join(' '), 'error');
+            oldError.apply(console, args);
+        };
+        console.warn = function(...args) {
+            appendToConsole(args.join(' '), 'warn');
+            oldWarn.apply(console, args);
+        };
+    </script>
+</body>
+</html>
