@@ -6,6 +6,17 @@ Instead of writing monolithic, deeply nested callback structures or maintaining 
 
 ---
 
+## Navigation & Related Guides
+- [📖 **Docs Hub**](file:///home/lluie/ws/docs/README.md)
+- [🚀 **Getting Started**](file:///home/lluie/ws/docs/getting-started.md)
+- [🔁 **Request-Reply Pattern**](file:///home/lluie/ws/docs/request-reply.md)
+- [🔄 **Offline Catch-Up Protocol**](file:///home/lluie/ws/docs/offline-reconnect-sync.md)
+- [📜 **Reconnection Rules & Caveats**](file:///home/lluie/ws/docs/reconnection-rules-and-caveats.md)
+- [📚 **API Reference**](file:///home/lluie/ws/docs/api-reference.md)
+- [🎮 **Interactive Demo Showcase**](file:///home/lluie/ws/docs/demo-showcase.md)
+
+---
+
 ## 1. How It Works
 
 ### The Handler Signature

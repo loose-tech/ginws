@@ -6,6 +6,17 @@ Raw WebSockets are inherently asynchronous and unidirectional. When a client sen
 
 ---
 
+## Navigation & Related Guides
+- [📖 **Docs Hub**](file:///home/lluie/ws/docs/README.md)
+- [🚀 **Getting Started**](file:///home/lluie/ws/docs/getting-started.md)
+- [🔗 **Action Chaining System**](file:///home/lluie/ws/docs/action-chaining.md)
+- [🔄 **Offline Catch-Up Protocol**](file:///home/lluie/ws/docs/offline-reconnect-sync.md)
+- [📜 **Reconnection Rules & Caveats**](file:///home/lluie/ws/docs/reconnection-rules-and-caveats.md)
+- [📚 **API Reference**](file:///home/lluie/ws/docs/api-reference.md)
+- [🎮 **Interactive Demo Showcase**](file:///home/lluie/ws/docs/demo-showcase.md)
+
+---
+
 ## 1. Sequence & Protocol Architecture
 
 ```

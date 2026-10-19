@@ -176,6 +176,8 @@
 	let dmBoxElement = $state<HTMLDivElement | null>(null);
 	let unreadDms = $state<Record<string, number>>({});
 	let totalUnreadDms = $derived(Object.values(unreadDms).reduce((a, b) => a + b, 0));
+	let roomUnread = $state<Record<string, number>>({});
+	let totalRoomUnread = $derived(Object.values(roomUnread).reduce((a, b) => a + b, 0));
 
 	// Wall State
 	let wallPosts = $state<WallPost[]>([]);
@@ -279,6 +281,7 @@
 			wsInstance?.sendRaw('users:list');
 			wsInstance?.sendRaw('wall:get');
 			wsInstance?.sendRaw('game:get');
+			wsInstance?.sendRaw('inbox:summary');
 
 			// Join default room & fetch message history (offline catch-up)
 			if (currentRoom) {
@@ -306,6 +309,7 @@
 			status = 'connected';
 			addLog('sys', 'Reconnected successfully');
 			wsInstance?.sendRaw('rooms:get');
+			wsInstance?.sendRaw('inbox:summary');
 			if (myProfile) {
 				performLogin(myProfile.username, myProfile.avatar, myProfile.status);
 			}
@@ -390,6 +394,9 @@
 			// If viewing current room and received message from peer, send read receipt
 			if (isLoggedIn && roomName === currentRoom && !isSelf && wsInstance && status === 'connected') {
 				markMessageAsRead(msgId, roomName);
+				roomUnread[roomName] = 0;
+			} else if (roomName !== currentRoom && !isSelf) {
+				roomUnread[roomName] = (roomUnread[roomName] || 0) + 1;
 			}
 
 			setTimeout(scrollChatToBottom, 40);
@@ -790,6 +797,25 @@
 			}
 			return '';
 		});
+
+		// 9. Inbox Summary (Unread Badges across Channels & DMs)
+		wsInstance.use('inbox:summary', (msg: Message) => {
+			if (Array.isArray(msg.payload)) {
+				for (const item of msg.payload) {
+					if (item.type === 'room') {
+						if (item.id !== currentRoom) {
+							roomUnread[item.id] = item.unreadCount || 0;
+						}
+					} else if (item.type === 'dm') {
+						if (!activeDmUser || activeDmUser.id !== item.id) {
+							unreadDms[item.id] = item.unreadCount || 0;
+						}
+					}
+				}
+				addLog('sys', 'Inbox summary synced (badges updated)', msg.payload);
+			}
+			return '';
+		});
 	}
 
 	function showToast(text: string, type: 'info' | 'success' | 'warn' = 'info') {
@@ -964,6 +990,7 @@
 		}
 
 		if (currentRoom === roomName && wsInstance) {
+			roomUnread[roomName] = 0;
 			fetchRoomHistory(roomName);
 			return;
 		}
@@ -971,6 +998,7 @@
 			wsInstance.sendRaw('leave', currentRoom, currentRoom);
 		}
 		currentRoom = roomName;
+		roomUnread[roomName] = 0;
 		if (wsInstance) {
 			wsInstance.sendRaw('join', currentRoom, currentRoom);
 			fetchRoomHistory(currentRoom);
@@ -2057,6 +2085,9 @@
 											</span>
 										{/if}
 									</div>
+									{#if roomUnread[room.name] > 0 && currentRoom !== room.name}
+										<span class="badge-unread-room" title="{roomUnread[room.name]} unread messages">{roomUnread[room.name]}</span>
+									{/if}
 									{#if currentRoom === room.name}
 										<span class="active-dot">●</span>
 									{/if}
@@ -4549,8 +4580,9 @@
 		box-shadow: 0 0 8px rgba(248, 81, 73, 0.4);
 	}
 
-	/* User Row Unread Badges in Sidebar & DM list */
+	/* User Row & Room Unread Badges in Sidebar & DM list */
 	.badge-unread-user,
+	.badge-unread-room,
 	.dm-unread-badge {
 		background: #f85149;
 		color: white;

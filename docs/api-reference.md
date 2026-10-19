@@ -4,6 +4,17 @@ Complete API specification for the **Go backend** (`ginws`) and the **TypeScript
 
 ---
 
+## Navigation & Related Guides
+- [📖 **Docs Hub**](file:///home/lluie/ws/docs/README.md)
+- [🚀 **Getting Started**](file:///home/lluie/ws/docs/getting-started.md)
+- [🔗 **Action Chaining System**](file:///home/lluie/ws/docs/action-chaining.md)
+- [🔁 **Request-Reply Pattern**](file:///home/lluie/ws/docs/request-reply.md)
+- [🔄 **Offline Catch-Up Protocol**](file:///home/lluie/ws/docs/offline-reconnect-sync.md)
+- [📜 **Reconnection Rules & Caveats**](file:///home/lluie/ws/docs/reconnection-rules-and-caveats.md)
+- [🎮 **Interactive Demo Showcase**](file:///home/lluie/ws/docs/demo-showcase.md)
+
+---
+
 ## Part 1: Go Backend (`ginws`)
 
 Package import:

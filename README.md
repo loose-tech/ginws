@@ -183,3 +183,8 @@ npm run dev
 ```
 
 Then visit **`http://localhost:5173`** in your browser.
+
+---
+
+## Release History
+For version history and detailed change notes, see [**CHANGELOG.md**](file:///home/lluie/ws/CHANGELOG.md).

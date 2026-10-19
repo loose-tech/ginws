@@ -1,5 +1,20 @@
 # Offline Catch-Up, Reconnection Synchronization & History Architecture
 
+> 💡 **Related Deep Dive**: For high-level architectural rules, anti-patterns, inbox unread badge patterns, and why WebSockets should NOT be heavy offline buffers, read the [**WebSocket Reconnection Rules, Caveats & Architecture Guide**](file:///home/lluie/ws/docs/reconnection-rules-and-caveats.md).
+
+---
+
+## Navigation & Related Guides
+- [📖 **Docs Hub**](file:///home/lluie/ws/docs/README.md)
+- [🚀 **Getting Started**](file:///home/lluie/ws/docs/getting-started.md)
+- [📜 **Rules & Caveats**](file:///home/lluie/ws/docs/reconnection-rules-and-caveats.md)
+- [🔗 **Action Chaining System**](file:///home/lluie/ws/docs/action-chaining.md)
+- [🔁 **Request-Reply Pattern**](file:///home/lluie/ws/docs/request-reply.md)
+- [📚 **API Reference**](file:///home/lluie/ws/docs/api-reference.md)
+- [🎮 **Interactive Demo Showcase**](file:///home/lluie/ws/docs/demo-showcase.md)
+
+---
+
 A common pitfall in real-time WebSocket systems is naive reconnection logic. In standard implementations:
 - Disconnection causes in-flight outbound messages to fail or be dropped silently.
 - Inbound messages broadcast while the user is offline are lost forever.

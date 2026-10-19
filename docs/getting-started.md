@@ -4,6 +4,17 @@ This guide walks you through integrating **GinWS** into your Go backend and pair
 
 ---
 
+## Navigation & Related Guides
+- [📖 **Docs Hub**](file:///home/lluie/ws/docs/README.md)
+- [📜 **Reconnection Rules & Caveats**](file:///home/lluie/ws/docs/reconnection-rules-and-caveats.md)
+- [🔄 **Offline Catch-Up Protocol**](file:///home/lluie/ws/docs/offline-reconnect-sync.md)
+- [🔗 **Action Chaining System**](file:///home/lluie/ws/docs/action-chaining.md)
+- [🔁 **Request-Reply Pattern**](file:///home/lluie/ws/docs/request-reply.md)
+- [📚 **API Reference**](file:///home/lluie/ws/docs/api-reference.md)
+- [🎮 **Interactive Demo Showcase**](file:///home/lluie/ws/docs/demo-showcase.md)
+
+---
+
 ## 1. Installation
 
 GinWS is designed to be added as a **Git submodule** directly into your project. This keeps your Go backend models, protocol definitions, and TypeScript client in strict lockstep across frontend and backend repositories.

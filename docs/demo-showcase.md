@@ -6,6 +6,17 @@ The GinWS repository includes a comprehensive, production-grade interactive show
 
 ---
 
+## Navigation & Related Guides
+- [📖 **Docs Hub**](file:///home/lluie/ws/docs/README.md)
+- [🚀 **Getting Started**](file:///home/lluie/ws/docs/getting-started.md)
+- [📜 **Reconnection Rules & Caveats**](file:///home/lluie/ws/docs/reconnection-rules-and-caveats.md)
+- [🔄 **Offline Catch-Up Protocol**](file:///home/lluie/ws/docs/offline-reconnect-sync.md)
+- [🔗 **Action Chaining System**](file:///home/lluie/ws/docs/action-chaining.md)
+- [🔁 **Request-Reply Pattern**](file:///home/lluie/ws/docs/request-reply.md)
+- [📚 **API Reference**](file:///home/lluie/ws/docs/api-reference.md)
+
+---
+
 ## 1. Quick Start: How to Run the Demo
 
 ### Terminal 1: Launch Go Backend Server

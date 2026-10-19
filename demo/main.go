@@ -1467,6 +1467,139 @@ func main() {
 		return ""
 	})
 
+	// --- 8. INBOX SUMMARY & RECONNECT BADGE COMPUTATION ---
+	type InboxSummaryItem struct {
+		ID          string `json:"id"`
+		Type        string `json:"type"` // "room" or "dm"
+		Name        string `json:"name"`
+		Avatar      string `json:"avatar,omitempty"`
+		UnreadCount int    `json:"unreadCount"`
+		LastText    string `json:"lastText"`
+		LastTime    string `json:"lastTime"`
+		LastTs      int64  `json:"lastTs"`
+	}
+
+	ws.On("inbox:summary", func(m *ws.Message, client *ws.Client) string {
+		uid := client.Id()
+		var items []InboxSummaryItem
+
+		extractText := func(content any) string {
+			if content == nil {
+				return ""
+			}
+			if cMap, ok := content.(map[string]any); ok {
+				if t, ok := cMap["text"].(string); ok && t != "" {
+					return t
+				}
+				if f, ok := cMap["files"].([]any); ok && len(f) > 0 {
+					return fmt.Sprintf("📎 %d attachment(s)", len(f))
+				}
+			} else if s, ok := content.(string); ok {
+				return s
+			}
+			return ""
+		}
+
+		// 1. Compute room unread badges
+		roomsList := getRoomsList()
+		roomMessagesMu.RLock()
+		for _, r := range roomsList {
+			msgs := roomMessages[r.ID]
+			unread := 0
+			var lastMsg *StoredMessage
+			for _, sm := range msgs {
+				if !sm.Recalled {
+					lastMsg = sm
+					if sm.SenderID != uid {
+						hasRead := false
+						for _, rb := range sm.ReadBy {
+							if rb.UserID == uid {
+								hasRead = true
+								break
+							}
+						}
+						if !hasRead {
+							unread++
+						}
+					}
+				}
+			}
+			lastText := ""
+			lastTime := ""
+			var lastTs int64
+			if lastMsg != nil {
+				lastText = extractText(lastMsg.Content)
+				lastTime = lastMsg.Time
+				lastTs = lastMsg.Timestamp
+			}
+			items = append(items, InboxSummaryItem{
+				ID:          r.ID,
+				Type:        "room",
+				Name:        "#" + r.Name,
+				Avatar:      r.Icon,
+				UnreadCount: unread,
+				LastText:    lastText,
+				LastTime:    lastTime,
+				LastTs:      lastTs,
+			})
+		}
+		roomMessagesMu.RUnlock()
+
+		// 2. Compute DM unread badges
+		dmMessagesMu.RLock()
+		usersMu.RLock()
+		for partnerID, profile := range users {
+			if partnerID == uid {
+				continue
+			}
+			k := getDmKey(uid, partnerID)
+			dms := dmMessages[k]
+			unread := 0
+			var lastDm *StoredDmMessage
+			for _, dm := range dms {
+				if !dm.Recalled {
+					lastDm = dm
+					if dm.ToID == uid && !dm.Read {
+						unread++
+					}
+				}
+			}
+			lastText := ""
+			lastTime := ""
+			var lastTs int64
+			if lastDm != nil {
+				lastText = extractText(lastDm.Content)
+				lastTime = lastDm.Time
+				lastTs = lastDm.Timestamp
+			}
+			partnerName := partnerID
+			partnerAvatar := "👤"
+			if profile != nil {
+				partnerName = profile.Username
+				partnerAvatar = profile.Avatar
+			}
+			items = append(items, InboxSummaryItem{
+				ID:          partnerID,
+				Type:        "dm",
+				Name:        partnerName,
+				Avatar:      partnerAvatar,
+				UnreadCount: unread,
+				LastText:    lastText,
+				LastTime:    lastTime,
+				LastTs:      lastTs,
+			})
+		}
+		usersMu.RUnlock()
+		dmMessagesMu.RUnlock()
+
+		client.Send(ws.Message{
+			Title:   "inbox:summary",
+			Payload: items,
+			Reply:   m.Reply,
+		})
+		return ""
+	})
+
 	ws.On("room:create", func(m *ws.Message, client *ws.Client) string {
 		data, _ := m.Payload.(map[string]any)
 		if data == nil {
