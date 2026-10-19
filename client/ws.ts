@@ -1,237 +1,356 @@
-// TODO: reply and temporary listeners that would be deleted right after it is done
+import { gen12p3 } from "./helper.js";
+import type {
+  ActionFunc,
+  Message,
+  ReplyHandler,
+  RequestOptions,
+  WsEventType,
+  WsOptions,
+} from "./types.js";
 
-import { gen12p3 } from "./helper";
-interface Reply {
-  key: string;
-  action: actionFunc;
-  resolver: [Function, Function];
-  expiration: number;
-  expiredAction: (reply: Reply, done: Function) => any;
-}
+export type { ActionFunc, Message, RequestOptions, WsEventType, WsOptions };
+
 export class Ws {
   url: string;
-  private protocols?: string | string[];
+  private protocols: string | string[] | undefined;
   private isIntentionalClose: boolean = false;
+  private reconnectTimer: any = null;
+
   initialize: boolean = false;
-  reconnectInterval: number = 5000; // Try reconnecting every 5s
-  attempts = 0;
-  socket: WebSocket;
-  /// for everything that needs a reply do it in fifo
-  usedMessage: number[] = [];
-  listeners: any[] = [];
-  actionMap: Map<string, actionFunc> = new Map();
-  replyMap: Map<string, Reply> = new Map();
+  reconnectInterval: number = 2000;
+  maxReconnectAttempts: number = Infinity;
+  autoReconnect: boolean = true;
+  attempts: number = 0;
 
-  constructor(url: string | URL, protocols?: string | string[]) {
-    this.socket = new WebSocket(url, protocols);
+  socket!: WebSocket;
+  private outboundQueue: string[] = [];
+  private listeners: Map<WsEventType, Set<(data?: any) => void>> = new Map();
+  actionMap: Map<string, ActionFunc> = new Map();
+  replyMap: Map<string, ReplyHandler> = new Map();
+
+  constructor(url: string | URL, protocolsOrOptions?: string | string[] | WsOptions) {
     this.url = url.toString();
-    this.protocols = protocols;
-    this.initializeListeners();
+
+    if (
+      protocolsOrOptions &&
+      typeof protocolsOrOptions === "object" &&
+      !Array.isArray(protocolsOrOptions)
+    ) {
+      const opts = protocolsOrOptions as WsOptions;
+      this.protocols = opts.protocols;
+      if (opts.reconnectInterval !== undefined) this.reconnectInterval = opts.reconnectInterval;
+      if (opts.maxReconnectAttempts !== undefined) this.maxReconnectAttempts = opts.maxReconnectAttempts;
+      if (opts.autoReconnect !== undefined) this.autoReconnect = opts.autoReconnect;
+    } else {
+      this.protocols = protocolsOrOptions as string | string[] | undefined;
+    }
+
+    this.connect();
   }
 
-  on(
-    event: "open" | "close" | "error" | "message",
-    handler: Function = () => { },
-  ) {
-    this.listeners.push({ event, handler });
-  }
+  // Connects or reconnects the WebSocket
+  private connect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
-  fire(
-    event: "open" | "close" | "error" | "reconnect" | "reconnecting",
-    data?: any,
-  ) {
-    const listeners = this.listeners.filter((l) => l.event === event);
-    console.log(this.listeners, listeners);
-    listeners.forEach((l) => l.handler(data));
-  }
-
-  private reconnected() {
-    const self = this;
-    this.fire("reconnect", self);
-  }
-  private fireAttempt() {
-    const self = this;
-    self.attempts++;
-    this.fire("reconnecting", self);
+    try {
+      this.socket = new WebSocket(this.url, this.protocols);
+      this.initializeListeners();
+    } catch (err) {
+      this.fire("error", err);
+      if (!this.isIntentionalClose && this.autoReconnect) {
+        this.scheduleReconnect();
+      }
+    }
   }
 
   private initializeListeners() {
-    console.debug("initializing ws");
     this.socket.addEventListener("open", () => {
-      this.fire("open");
-      console.log("Connected!");
+      const wasInitialized = this.initialize;
+      this.initialize = true;
       this.isIntentionalClose = false;
       this.attempts = 0;
-      if (this.initialize) {
-        this.reconnected();
+
+      this.fire("open");
+      if (wasInitialized) {
+        this.fire("reconnect", this);
       }
+
+      // Flush queued messages that were called before connection opened
+      this.flushOutboundQueue();
     });
 
-    this.socket.addEventListener("message", (data: any) => {
+    this.socket.addEventListener("message", (event: MessageEvent) => {
       try {
-        console.log({ data });
-        const msg: Message = JSON.parse(data.data as any as string);
+        const raw = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
+        const msg: Message = JSON.parse(raw);
+        this.fire("message", msg);
         this.run(msg.title, msg);
       } catch (err) {
-        console.log(err);
-        throw err;
+        this.fire("error", err);
       }
     });
 
-    this.socket.addEventListener("close", (event) => {
-      console.log("Closed.");
+    this.socket.addEventListener("close", () => {
       this.fire("close");
-      if (!this.isIntentionalClose) {
-        this.attemptReconnect();
+      if (!this.isIntentionalClose && this.autoReconnect) {
+        this.scheduleReconnect();
       }
+    });
+
+    this.socket.addEventListener("error", (err) => {
+      this.fire("error", err);
     });
   }
 
-  private attemptReconnect() {
-    console.log(`Attempting reconnect in ${this.reconnectInterval / 1000}s...`);
-    setTimeout(() => {
-      console.log("Reconnecting...");
-      this.fireAttempt();
-      const newSocket = new WebSocket(this.url, this.protocols);
-      this.socket = newSocket;
-      this.initializeListeners();
+  private scheduleReconnect() {
+    if (this.reconnectTimer || this.isIntentionalClose) return;
+    if (this.attempts >= this.maxReconnectAttempts) return;
+
+    this.attempts++;
+    this.fire("reconnecting", { attempt: this.attempts });
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
     }, this.reconnectInterval);
   }
 
-  // Method to close properly
-  public closeSafe() {
-    this.isIntentionalClose = true;
-    this.socket.close();
-    this.initialize = false;
+  private flushOutboundQueue() {
+    while (this.outboundQueue.length > 0 && this.socket.readyState === WebSocket.OPEN) {
+      const next = this.outboundQueue.shift();
+      if (next) {
+        this.socket.send(next);
+      }
+    }
   }
 
-  // message them
+  private sendSafe(json: string): void {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(json);
+    } else {
+      this.outboundQueue.push(json);
+    }
+  }
+
+  // Register event listener (open, close, error, reconnect, reconnecting, message)
+  on(event: WsEventType, handler: (data?: any) => void): () => void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(handler);
+    return () => this.off(event, handler);
+  }
+
+  // Remove event listener
+  off(event: WsEventType, handler?: (data?: any) => void) {
+    if (!handler) {
+      this.listeners.delete(event);
+      return;
+    }
+    const set = this.listeners.get(event);
+    if (set) {
+      set.delete(handler);
+    }
+  }
+
+  // Register one-time event listener
+  once(event: WsEventType, handler: (data?: any) => void): () => void {
+    const unbind = this.on(event, (data) => {
+      unbind();
+      handler(data);
+    });
+    return unbind;
+  }
+
+  // Trigger event listeners
+  fire(event: WsEventType, data?: any) {
+    const set = this.listeners.get(event);
+    if (set) {
+      set.forEach((fn) => {
+        try {
+          fn(data);
+        } catch (err) {
+          console.error(`Error in ws event handler [${event}]:`, err);
+        }
+      });
+    }
+  }
+
+  // Register a named action handler for client-side routing & chaining
+  use(title: string, action: ActionFunc) {
+    this.actionMap.set(title, action);
+  }
+
+  // Modern Request-Reply: send request and await server reply directly
+  request<T = any>(title: string, payload?: any, options?: RequestOptions): Promise<Message & { payload: T }> {
+    const duration = options?.timeout || 0;
+    const room = options?.room || null;
+
+    return this.sendRaw(title, room, payload, duration) as Promise<Message & { payload: T }>;
+  }
+
+  // Fire-and-forget message send
+  send(title: string, payload?: any, room?: string): void {
+    const msg: Message = {
+      title,
+      payload,
+      room,
+    };
+    this.sendSafe(JSON.stringify(msg));
+  }
+
+  // Send an object message with optional reply and expiration handler
   sendObj(
     msg: Message,
-    reply?: actionFunc,
-    expiredCb?: Reply["expiredAction"],
-  ) {
+    reply?: ActionFunc,
+    expiredCb?: ReplyHandler["expiredAction"],
+  ): Promise<any> {
     return new Promise((resolve, reject) => {
-      if (!!reply) {
-        const id = gen12p3();
-        msg.reply = id;
-        const json = JSON.stringify(msg);
-        let timeout: any;
+      const id = gen12p3();
+      msg.reply = id;
 
-        const replyer: Reply = {
-          action: reply.bind(this),
-          key: id,
-          resolver: [
-            (arg: any) => {
-              if (timeout) clearTimeout(timeout);
-              resolve(arg);
-            },
-            (arg: any) => {
-              if (timeout) clearTimeout(timeout);
-              reject(arg);
-            },
-          ],
-          expiration: Date.now() + msg.duration,
-          expiredAction: expiredCb as any,
-        };
-        this.replyMap.set(id, replyer);
-        this.socket.send(json);
-        if (msg.duration > 0) {
-          timeout = setTimeout(() => {
-            console.warn("expired call... after: " + msg.duration);
-            expiredCb?.(replyer, (...args: any[]) => {
-              clearTimeout(timeout);
+      let timeout: any = null;
+      const duration = msg.duration || 0;
+
+      const replyer: ReplyHandler = {
+        key: id,
+        action: reply ? reply.bind(this) : undefined,
+        resolve: (arg: any) => {
+          if (timeout) clearTimeout(timeout);
+          resolve(arg);
+        },
+        reject: (arg: any) => {
+          if (timeout) clearTimeout(timeout);
+          reject(arg);
+        },
+        expiration: duration > 0 ? Date.now() + duration : 0,
+        expiredAction: expiredCb,
+      };
+
+      this.replyMap.set(id, replyer);
+      this.sendSafe(JSON.stringify(msg));
+
+      if (duration > 0) {
+        timeout = setTimeout(() => {
+          this.replyMap.delete(id);
+          if (expiredCb) {
+            expiredCb(replyer, () => {
               resolve(null);
             });
-          }, msg.duration);
-        }
-      } else {
-        const json = JSON.stringify(msg);
-        this.socket.send(json);
-        resolve(null);
+          } else {
+            reject(new Error(`WebSocket request '${msg.title}' timed out after ${duration}ms`));
+          }
+        }, duration);
       }
     });
   }
 
-  // send
+  // Send raw message format (compatible with existing code)
   sendRaw(
     title: string,
     room?: string | null,
     data?: any,
     duration?: number,
-    reply?: actionFunc,
-    expiredCb?: Reply["expiredAction"],
-  ) {
+    reply?: ActionFunc,
+    expiredCb?: ReplyHandler["expiredAction"],
+  ): Promise<any> {
     const msg: Message = {
-      duration: duration || 0,
-      id: null as any,
-      payload: data,
-      room: room || (null as any),
       title,
-    } as any;
+      payload: data,
+      room: room || undefined,
+      duration: duration || 0,
+    };
 
     return this.sendObj(msg, reply, expiredCb);
   }
 
-  // send to with room
+  // Send to room with reply
   sendTo(
     room: string,
     title: string,
     data?: any,
     duration?: number,
-    reply?: actionFunc,
-    expiredCb?: Reply["expiredAction"],
-  ) {
+    reply?: ActionFunc,
+    expiredCb?: ReplyHandler["expiredAction"],
+  ): Promise<any> {
     return this.sendRaw(title, room, data, duration, reply, expiredCb);
   }
 
-  use(title: string, action: actionFunc) {
-    this.actionMap.set(title, action);
-  }
-
+  // Execute named actions sequentially with support for async functions
   async runraw(
-    map: Map<string, actionFunc> | Map<string, Reply>,
+    map: Map<string, ActionFunc> | Map<string, ReplyHandler>,
     title: string,
     msg: Message,
   ) {
-    let action: actionFunc;
-    for (; ;) {
-      if (!title) {
+    let currentTitle: string = title;
+    let depth = 0;
+    const maxDepth = 50;
+
+    while (currentTitle && depth < maxDepth) {
+      depth++;
+      const handler = map.get(currentTitle);
+      if (!handler) {
         return;
       }
-      action = map.get(title) as actionFunc;
-      if (!action) {
-        throw new Error(`action ${title} is not available`);
-      }
-      if (typeof action === "function") {
-        title = action(msg) as string;
+
+      if (typeof handler === "function") {
+        const next = await handler(msg);
+        currentTitle = typeof next === "string" ? next : "";
       } else {
-        const reply = action as Reply;
+        const replyHandler = handler as ReplyHandler;
+        this.replyMap.delete(currentTitle);
+
         try {
-          const f: (msg: Message) => Promise<any> = reply.action as any;
-          const res = await f(msg);
-          if (reply.expiration < Date.now()) {
-            reply.resolver[0]("recieved but expired expired");
-            console.warn("has expired job");
+          if (replyHandler.action) {
+            const res = await replyHandler.action(msg);
+            replyHandler.resolve(res !== undefined ? res : msg);
           } else {
-            reply.resolver[0](res);
+            if (msg.title === "error") {
+              const errMsg = msg.payload?.error || "Server returned an error";
+              replyHandler.reject(new Error(errMsg));
+            } else {
+              replyHandler.resolve(msg);
+            }
           }
-          this.replyMap.delete(title);
-          return;
         } catch (err) {
-          throw err;
+          replyHandler.reject(err);
         }
+        return;
       }
     }
   }
 
-  // run with reply
+  // Dispatch incoming message to reply handlers and/or named action pipeline
   run(title: string, msg: Message) {
-    if (msg.reply) {
-      console.log("msg");
-      return this.runraw(this.replyMap, msg.reply, msg);
-    } else {
-      return this.runraw(this.actionMap, title, msg);
+    if (msg.reply && this.replyMap.has(msg.reply)) {
+      this.runraw(this.replyMap, msg.reply, msg);
     }
+    if (title && this.actionMap.has(title)) {
+      this.runraw(this.actionMap, title, msg);
+    }
+  }
+
+  // Method to close connection intentionally
+  public closeSafe() {
+    this.isIntentionalClose = true;
+    this.autoReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.socket) {
+      this.socket.close();
+    }
+    this.initialize = false;
+    this.outboundQueue = [];
+
+    // Reject pending replies
+    for (const reply of this.replyMap.values()) {
+      reply.reject(new Error("WebSocket closed intentionally"));
+    }
+    this.replyMap.clear();
   }
 }

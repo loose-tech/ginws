@@ -1,22 +1,17 @@
-interface Message {
-  id: string;
-  room: string;
-  title: string;
-  duration: number;
-  payload: any[];
-  // to tell server we want reply
-  reply: string;
-}
+export * from "./types.js";
 
-// the function actions to be managed on every possible message
-type actionFunc = (msg: Message) => string | undefined;
+declare global {
+  interface Message {
+    id?: string | undefined;
+    room?: string | undefined;
+    title: string;
+    duration?: number | undefined;
+    payload?: any;
+    reply?: string | undefined;
+    broadcast?: string | undefined;
+    data?: any;
+    encoding?: string | undefined;
+  }
 
-interface EventBuffer {
-  title: string;
-  expiry: number;
-}
-
-interface QueueMessage {
-  type: "add" | "consume";
-  args: any[];
+  type actionFunc = (msg: Message) => string | undefined | void | Promise<string | undefined | void>;
 }

@@ -16,101 +16,137 @@ const (
 
 func (c *Client) readPump() {
 	defer func() {
-		c.Conn.Close()
-		// Cleanup: remove from Clients and Rooms maps here
+		if c.hub != nil {
+			c.hub.unregister(c)
+		}
+		c.Close()
 	}()
 
-	c.Conn.SetReadLimit(512)
+	// 16 MB max message size for multimedia and file sharing
+	c.Conn.SetReadLimit(16 * 1024 * 1024)
 	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 
-	// This handler triggers every time a Pong comes back
 	c.Conn.SetPongHandler(func(string) error {
 		c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
 
-	type RequestMsg struct {
-		mType int
-		msg   []byte
-		err   error
-	}
-
-	msgChan := make(chan RequestMsg, 1)
-	go func() {
-		for request := range msgChan {
-			var m = Message{}
-			err := json.Unmarshal(request.msg, &m)
-			if err != nil {
-				slog.Error("failed to parse message", "error", err)
+	for {
+		_, msgBytes, err := c.Conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				slog.Debug("websocket connection closed", "error", err, "id", c.Id())
 			}
-			slog.Debug("info", "conn", c.Conn)
-			if m.Title == "join" {
-				JoinRoom(*c, m.Data.(string))
-			} else {
-				err = processMessage(*c, &m)
-				if err != nil {
-					if c.Conn != nil {
-						c.Send(Message{
-							Encoding: "utf8",
-							Payload: map[string]any{
-								"failed": err.Error(),
-							},
-							Id: c.Id(),
-						})
-					}
+			break
+		}
 
-				} else {
-					slog.Info("ws: succcessfully responded")
+		var m Message
+		if err := json.Unmarshal(msgBytes, &m); err != nil {
+			slog.Error("failed to parse message", "error", err)
+			continue
+		}
+
+		if m.Title == "join" {
+			room := m.Room
+			if room == "" {
+				if s, ok := m.Payload.(string); ok {
+					room = s
+				} else if s, ok := m.Data.(string); ok {
+					room = s
 				}
 			}
-			slog.Info("process normallyy")
+			if room != "" {
+				c.JoinRoom(room)
+				if m.Reply != "" {
+					c.Send(Message{
+						Title:   "joined",
+						Room:    room,
+						Payload: map[string]any{"room": room, "status": "joined"},
+						Reply:   m.Reply,
+						Id:      c.Id(),
+					})
+				}
+			}
+			continue
 		}
-	}()
 
-	go func() {
-		for msg := range c.MessageChan {
-			slog.Info("recieved a message ")
-			send(msg)
+		if m.Title == "leave" {
+			room := m.Room
+			if room == "" {
+				if s, ok := m.Payload.(string); ok {
+					room = s
+				} else if s, ok := m.Data.(string); ok {
+					room = s
+				}
+			}
+			if room != "" {
+				c.LeaveRoom(room)
+				if m.Reply != "" {
+					c.Send(Message{
+						Title:   "left",
+						Room:    room,
+						Payload: map[string]any{"room": room, "status": "left"},
+						Reply:   m.Reply,
+						Id:      c.Id(),
+					})
+				}
+			}
+			continue
 		}
-	}()
 
-	for {
-		mtype, msg, err := c.Conn.ReadMessage()
-		slog.Info("new message")
-		if err != nil {
-			break
+		// Process each message asynchronously so slow actions do not block reading subsequent frames
+		go func(msg Message) {
+			var procErr error
+			if c.hub != nil {
+				procErr = c.hub.ProcessMessage(c, &msg)
+			} else {
+				procErr = DefaultHub.ProcessMessage(c, &msg)
+			}
 
-		}
-		// create a new request
-		request := RequestMsg{
-			mType: mtype,
-			msg:   msg,
-			err:   err,
-		}
-		msgChan <- request
-
+			if procErr != nil {
+				slog.Error("failed to process message", "error", procErr, "title", msg.Title)
+				if msg.Reply != "" {
+					c.Send(Message{
+						Encoding: "utf8",
+						Title:    "error",
+						Payload: map[string]any{
+							"error": procErr.Error(),
+						},
+						Reply: msg.Reply,
+						Id:    c.Id(),
+					})
+				}
+			}
+		}(m)
 	}
 }
 
-// do the rest
+// writePump is the sole concurrent writer to c.Conn
 func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
-		c.Conn.Close()
+		c.Close()
 	}()
 
-	// do the tick
-	for range ticker.C {
-		// Send a Ping to the browser
-		c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
-		if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-			return
+	for {
+		select {
+		case msg, ok := <-c.MessageChan:
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				// The hub/client closed the channel.
+				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.Conn.WriteJSON(msg); err != nil {
+				slog.Error("failed to write json", "error", err, "id", c.Id())
+				return
+			}
+		case <-ticker.C:
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
-
-}
-
-func (c *Client) Send(msg Message) {
-	c.MessageChan <- msg
 }

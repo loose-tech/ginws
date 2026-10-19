@@ -3,9 +3,9 @@ package ws
 import (
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -17,48 +17,51 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// the handler
-func WSHandler(auth bool) gin.HandlerFunc {
-	log := slog.With("ws.WSHandler")
+// WSHandler creates a Gin handler function bound to the hub
+func (h *Hub) WSHandler(auth bool) gin.HandlerFunc {
+	log := slog.With("component", "ws.WSHandler")
 	return func(ctx *gin.Context) {
-		log.Info("new client")
-		handler, err := AuthHandler.Check(ctx)
-		if err != nil {
-			log.Error("failed to process auth")
-			return
-		}
-		conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
-		if err != nil {
-			ctx.AbortWithStatusJSON(400, gin.H{})
+		log.Info("new client connecting")
+		var handler Handshaker
+		var err error
+
+		auther := h.auther
+		if auther == nil {
+			auther = AuthHandler
 		}
 
-		newClient := Client{
+		if auth && auther != nil {
+			handler, err = auther.Check(ctx)
+			if err != nil {
+				log.Error("failed to process auth", "error", err)
+				ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+				return
+			}
+		} else {
+			handler = NewDefaultHandshaker(uuid.New().String())
+		}
+
+		conn, err := h.upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
+		if err != nil {
+			log.Error("failed to upgrade websocket connection", "error", err)
+			return
+		}
+
+		newClient := &Client{
+			Handshaker:  handler,
 			Conn:        conn,
 			Joined:      []string{},
-			Handshaker:  handler,
-			MessageChan: make(chan Message, 3),
+			MessageChan: make(chan Message, 256),
+			hub:         h,
 		}
-		Clients[newClient.Id()] = newClient
+		h.Register(newClient)
 
 		go newClient.readPump()
 		go newClient.writePump()
-
 	}
 }
 
-// TODO: remove this later
-func init() {
-	On("hello", func(m *Message, client Client) string {
-		slog.Info("reply", "reply", m.Reply)
-		time.Sleep(time.Second)
-		client.Send(Message{
-			Encoding: "utf8",
-			Payload:  "hello",
-			Id:       client.Id(),
-			Title:    "see-me",
-			Reply:    m.Reply,
-		})
-		return ""
-	})
-
+// WSHandler creates a Gin handler using the DefaultHub
+func WSHandler(auth bool) gin.HandlerFunc {
+	return DefaultHub.WSHandler(auth)
 }

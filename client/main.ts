@@ -1,4 +1,4 @@
-import { Ws } from "./ws";
+import { Ws } from "./ws.js";
 
 const ws = new Ws("ws://localhost:5000/ws");
 let counter = 0;

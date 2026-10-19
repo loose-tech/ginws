@@ -6,33 +6,43 @@ import (
 	"time"
 )
 
-func process(client Client, msg *Message, ctx context.Context) error {
+func (h *Hub) process(client *Client, msg *Message, ctx context.Context) error {
 	currentName := msg.Title
 	reschan := make(chan error, 1)
-	// process everything
+
 	go func() {
+		depth := 0
+		const maxDepth = 50
+
 		for {
 			if ctx.Err() != nil {
+				reschan <- ctx.Err()
 				return
 			}
-			action, ok := ActionMap[currentName]
+
+			if depth >= maxDepth {
+				reschan <- ErrMaxChainDepth
+				return
+			}
+			depth++
+
+			action, ok := h.GetAction(currentName)
 			if !ok {
 				slog.Debug("no action available", "name", currentName)
-				reschan <- ErrFaildToProcess
+				reschan <- ErrFailedToProcess
 				return
 			}
 
 			nextRoute := action(msg, client)
 
 			if nextRoute == "" {
-				reschan <- nil // done
+				reschan <- nil // completed chain
 				return
 			}
 
-			// If the action returned a new route name, loop again
+			// If the action returned a new route name, loop to the next action
 			currentName = nextRoute
 			slog.Info("chaining to next action", "name", currentName)
-
 		}
 	}()
 
@@ -41,19 +51,24 @@ func process(client Client, msg *Message, ctx context.Context) error {
 		return ctx.Err()
 	case err := <-reschan:
 		return err
-
 	}
-
 }
 
-func processMessage(client Client, message *Message) error {
-	slog.Info("processing new message", "title", message.Title, "room", message.Room, "duration", message.DurationMs)
-	var cancel = func() {}
-	var ctx = context.Background()
+// ProcessMessage runs the action pipeline for a message within an optional timeout context
+func (h *Hub) ProcessMessage(client *Client, message *Message) error {
+	slog.Info("processing new message", "title", message.Title, "room", message.Room, "durationMs", int64(message.DurationMs))
+	ctx := context.Background()
+	var cancel context.CancelFunc = func() {}
+
 	if message.DurationMs > 0 {
-		ctx, cancel = context.WithTimeout(context.Background(), message.DurationMs*time.Microsecond)
+		ctx, cancel = context.WithTimeout(context.Background(), message.DurationMs*time.Millisecond)
 	}
 	defer cancel()
-	return process(client, message, ctx)
 
+	return h.process(client, message, ctx)
+}
+
+// ProcessMessage processes a message using the DefaultHub
+func ProcessMessage(client *Client, message *Message) error {
+	return DefaultHub.ProcessMessage(client, message)
 }

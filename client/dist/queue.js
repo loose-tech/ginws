@@ -1,77 +1,49 @@
-// TODO: reply and temporary listeners that would be deleted right after it is done
 export class Queue {
-    buffer = [];
-    vacancy = new Map();
-    vacancies = 0;
-    queue = [];
-    addBuffer(data) {
-        return new Promise((resolve, reject) => {
-            let id = 0;
-            if (this.vacancies) {
-                const keys = Array.from(this.vacancy.keys());
-                id = keys[0];
-                this.vacancy.set(id, id + 1);
-                resolve(id);
-            }
-            else {
-                this.vacancies++;
-                id = this.vacancies - 1;
-                this.vacancy.set(id, id + 1);
-                resolve(id);
-            }
-            // means there has happend (unlikely)
-            if (id) {
-                this.buffer[id] = data;
-            }
-            else {
-                reject(new Error("failed to add buffer"));
-            }
-        });
+    items = [];
+    processing = false;
+    enqueue(data, id) {
+        const item = {
+            id: id !== undefined ? id : Date.now() + Math.random(),
+            data,
+            timestamp: Date.now(),
+        };
+        this.items.push(item);
+        return item;
     }
-    consumeBuffer(title) {
-        return new Promise((resolve, reject) => {
-            this.vacancies++;
-            this.buffer.forEach((buf, i) => {
-                // the title
-                if (buf.title === title) {
-                    this.buffer[i] = null;
+    dequeue() {
+        return this.items.shift();
+    }
+    peek() {
+        return this.items[0];
+    }
+    get length() {
+        return this.items.length;
+    }
+    isEmpty() {
+        return this.items.length === 0;
+    }
+    clear() {
+        this.items = [];
+    }
+    flush() {
+        const all = [...this.items];
+        this.items = [];
+        return all;
+    }
+    async processEach(handler) {
+        if (this.processing)
+            return;
+        this.processing = true;
+        try {
+            while (this.items.length > 0) {
+                const item = this.dequeue();
+                if (item) {
+                    await handler(item.data);
                 }
-            });
-        });
-    }
-    cleanBuffer() {
-        return Promise.resolve((this.buffer = this.buffer.filter((d) => !!d)));
-    }
-    addQueue(msg) {
-        this.queue.push(msg);
-    }
-    do() {
-        const msg = this.queue.shift();
-        if (msg !== undefined) {
-            switch (msg.type) {
-                case "add":
-                    return this.addBuffer(msg.args);
-                case "consume":
-                    return this.consumeBuffer(msg.args[0]);
-                default:
-                    /// TODO: do real work after
-                    return Promise.resolve(true);
             }
         }
-    }
-    async process() {
-        for (;;) {
-            if (this.queue.length) {
-                await this.do();
-            }
-            else {
-                await new Promise((resolve) => {
-                    const tout = setTimeout(() => {
-                        resolve(null);
-                        clearTimeout(tout);
-                    }, 3); // safe wiat
-                });
-            }
+        finally {
+            this.processing = false;
         }
     }
 }

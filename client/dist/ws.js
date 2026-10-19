@@ -1,193 +1,298 @@
-// TODO: reply and temporary listeners that would be deleted right after it is done
-import { gen12p3 } from "./helper";
+import { gen12p3 } from "./helper.js";
 export class Ws {
     url;
     protocols;
     isIntentionalClose = false;
+    reconnectTimer = null;
     initialize = false;
-    reconnectInterval = 5000; // Try reconnecting every 5s
+    reconnectInterval = 2000;
+    maxReconnectAttempts = Infinity;
+    autoReconnect = true;
     attempts = 0;
     socket;
-    /// for everything that needs a reply do it in fifo
-    usedMessage = [];
-    listeners = [];
+    outboundQueue = [];
+    listeners = new Map();
     actionMap = new Map();
     replyMap = new Map();
-    constructor(url, protocols) {
-        this.socket = new WebSocket(url, protocols);
+    constructor(url, protocolsOrOptions) {
         this.url = url.toString();
-        this.protocols = protocols;
-        this.initializeListeners();
+        if (protocolsOrOptions &&
+            typeof protocolsOrOptions === "object" &&
+            !Array.isArray(protocolsOrOptions)) {
+            const opts = protocolsOrOptions;
+            this.protocols = opts.protocols;
+            if (opts.reconnectInterval !== undefined)
+                this.reconnectInterval = opts.reconnectInterval;
+            if (opts.maxReconnectAttempts !== undefined)
+                this.maxReconnectAttempts = opts.maxReconnectAttempts;
+            if (opts.autoReconnect !== undefined)
+                this.autoReconnect = opts.autoReconnect;
+        }
+        else {
+            this.protocols = protocolsOrOptions;
+        }
+        this.connect();
     }
-    on(event, handler = () => { }) {
-        this.listeners.push({ event, handler });
-    }
-    fire(event, data) {
-        const listeners = this.listeners.filter((l) => l.event === event);
-        console.log(this.listeners, listeners);
-        listeners.forEach((l) => l.handler(data));
-    }
-    reconnected() {
-        const self = this;
-        this.fire("reconnect", self);
-    }
-    fireAttempt() {
-        const self = this;
-        self.attempts++;
-        this.fire("reconnecting", self);
+    // Connects or reconnects the WebSocket
+    connect() {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        try {
+            this.socket = new WebSocket(this.url, this.protocols);
+            this.initializeListeners();
+        }
+        catch (err) {
+            this.fire("error", err);
+            if (!this.isIntentionalClose && this.autoReconnect) {
+                this.scheduleReconnect();
+            }
+        }
     }
     initializeListeners() {
-        console.debug("initializing ws");
         this.socket.addEventListener("open", () => {
-            this.fire("open");
-            console.log("Connected!");
+            const wasInitialized = this.initialize;
+            this.initialize = true;
             this.isIntentionalClose = false;
             this.attempts = 0;
-            if (this.initialize) {
-                this.reconnected();
+            this.fire("open");
+            if (wasInitialized) {
+                this.fire("reconnect", this);
             }
+            // Flush queued messages that were called before connection opened
+            this.flushOutboundQueue();
         });
-        this.socket.addEventListener("message", (data) => {
+        this.socket.addEventListener("message", (event) => {
             try {
-                console.log({ data });
-                const msg = JSON.parse(data.data);
+                const raw = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
+                const msg = JSON.parse(raw);
+                this.fire("message", msg);
                 this.run(msg.title, msg);
             }
             catch (err) {
-                console.log(err);
-                throw err;
+                this.fire("error", err);
             }
         });
-        this.socket.addEventListener("close", (event) => {
-            console.log("Closed.");
+        this.socket.addEventListener("close", () => {
             this.fire("close");
-            if (!this.isIntentionalClose) {
-                this.attemptReconnect();
+            if (!this.isIntentionalClose && this.autoReconnect) {
+                this.scheduleReconnect();
             }
+        });
+        this.socket.addEventListener("error", (err) => {
+            this.fire("error", err);
         });
     }
-    attemptReconnect() {
-        console.log(`Attempting reconnect in ${this.reconnectInterval / 1000}s...`);
-        setTimeout(() => {
-            console.log("Reconnecting...");
-            this.fireAttempt();
-            const newSocket = new WebSocket(this.url, this.protocols);
-            this.socket = newSocket;
-            this.initializeListeners();
+    scheduleReconnect() {
+        if (this.reconnectTimer || this.isIntentionalClose)
+            return;
+        if (this.attempts >= this.maxReconnectAttempts)
+            return;
+        this.attempts++;
+        this.fire("reconnecting", { attempt: this.attempts });
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.connect();
         }, this.reconnectInterval);
     }
-    // Method to close properly
-    closeSafe() {
-        this.isIntentionalClose = true;
-        this.socket.close();
-        this.initialize = false;
+    flushOutboundQueue() {
+        while (this.outboundQueue.length > 0 && this.socket.readyState === WebSocket.OPEN) {
+            const next = this.outboundQueue.shift();
+            if (next) {
+                this.socket.send(next);
+            }
+        }
     }
-    // message them
-    sendObj(msg, reply, expiredCb) {
-        return new Promise((resolve, reject) => {
-            if (!!reply) {
-                const id = gen12p3();
-                msg.reply = id;
-                const json = JSON.stringify(msg);
-                let timeout;
-                const replyer = {
-                    action: reply.bind(this),
-                    key: id,
-                    resolver: [
-                        (arg) => {
-                            if (timeout)
-                                clearTimeout(timeout);
-                            resolve(arg);
-                        },
-                        (arg) => {
-                            if (timeout)
-                                clearTimeout(timeout);
-                            reject(arg);
-                        },
-                    ],
-                    expiration: Date.now() + msg.duration,
-                    expiredAction: expiredCb,
-                };
-                this.replyMap.set(id, replyer);
-                this.socket.send(json);
-                if (msg.duration > 0) {
-                    timeout = setTimeout(() => {
-                        console.warn("expired call... after: " + msg.duration);
-                        expiredCb?.(replyer, (...args) => {
-                            clearTimeout(timeout);
-                            resolve(null);
-                        });
-                    }, msg.duration);
-                }
-            }
-            else {
-                const json = JSON.stringify(msg);
-                this.socket.send(json);
-                resolve(null);
-            }
+    sendSafe(json) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(json);
+        }
+        else {
+            this.outboundQueue.push(json);
+        }
+    }
+    // Register event listener (open, close, error, reconnect, reconnecting, message)
+    on(event, handler) {
+        if (!this.listeners.has(event)) {
+            this.listeners.set(event, new Set());
+        }
+        this.listeners.get(event).add(handler);
+        return () => this.off(event, handler);
+    }
+    // Remove event listener
+    off(event, handler) {
+        if (!handler) {
+            this.listeners.delete(event);
+            return;
+        }
+        const set = this.listeners.get(event);
+        if (set) {
+            set.delete(handler);
+        }
+    }
+    // Register one-time event listener
+    once(event, handler) {
+        const unbind = this.on(event, (data) => {
+            unbind();
+            handler(data);
         });
+        return unbind;
     }
-    // send
-    sendRaw(title, room, data, duration, reply, expiredCb) {
-        const msg = {
-            duration: duration || 0,
-            id: null,
-            payload: data,
-            room: room || null,
-            title,
-        };
-        return this.sendObj(msg, reply, expiredCb);
+    // Trigger event listeners
+    fire(event, data) {
+        const set = this.listeners.get(event);
+        if (set) {
+            set.forEach((fn) => {
+                try {
+                    fn(data);
+                }
+                catch (err) {
+                    console.error(`Error in ws event handler [${event}]:`, err);
+                }
+            });
+        }
     }
-    // send to with room
-    sendTo(room, title, data, duration, reply, expiredCb) {
-        return this.sendRaw(title, room, data, duration, reply, expiredCb);
-    }
+    // Register a named action handler for client-side routing & chaining
     use(title, action) {
         this.actionMap.set(title, action);
     }
-    async runraw(map, title, msg) {
-        let action;
-        for (;;) {
-            if (!title) {
-                return;
-            }
-            action = map.get(title);
-            if (!action) {
-                throw new Error(`action ${title} is not available`);
-            }
-            if (typeof action === "function") {
-                title = action(msg);
-            }
-            else {
-                const reply = action;
-                try {
-                    const f = reply.action;
-                    const res = await f(msg);
-                    if (reply.expiration < Date.now()) {
-                        reply.resolver[0]("recieved but expired expired");
-                        console.warn("has expired job");
+    // Modern Request-Reply: send request and await server reply directly
+    request(title, payload, options) {
+        const duration = options?.timeout || 0;
+        const room = options?.room || null;
+        return this.sendRaw(title, room, payload, duration);
+    }
+    // Fire-and-forget message send
+    send(title, payload, room) {
+        const msg = {
+            title,
+            payload,
+            room,
+        };
+        this.sendSafe(JSON.stringify(msg));
+    }
+    // Send an object message with optional reply and expiration handler
+    sendObj(msg, reply, expiredCb) {
+        return new Promise((resolve, reject) => {
+            const id = gen12p3();
+            msg.reply = id;
+            let timeout = null;
+            const duration = msg.duration || 0;
+            const replyer = {
+                key: id,
+                action: reply ? reply.bind(this) : undefined,
+                resolve: (arg) => {
+                    if (timeout)
+                        clearTimeout(timeout);
+                    resolve(arg);
+                },
+                reject: (arg) => {
+                    if (timeout)
+                        clearTimeout(timeout);
+                    reject(arg);
+                },
+                expiration: duration > 0 ? Date.now() + duration : 0,
+                expiredAction: expiredCb,
+            };
+            this.replyMap.set(id, replyer);
+            this.sendSafe(JSON.stringify(msg));
+            if (duration > 0) {
+                timeout = setTimeout(() => {
+                    this.replyMap.delete(id);
+                    if (expiredCb) {
+                        expiredCb(replyer, () => {
+                            resolve(null);
+                        });
                     }
                     else {
-                        reply.resolver[0](res);
+                        reject(new Error(`WebSocket request '${msg.title}' timed out after ${duration}ms`));
                     }
-                    this.replyMap.delete(title);
-                    return;
+                }, duration);
+            }
+        });
+    }
+    // Send raw message format (compatible with existing code)
+    sendRaw(title, room, data, duration, reply, expiredCb) {
+        const msg = {
+            title,
+            payload: data,
+            room: room || undefined,
+            duration: duration || 0,
+        };
+        return this.sendObj(msg, reply, expiredCb);
+    }
+    // Send to room with reply
+    sendTo(room, title, data, duration, reply, expiredCb) {
+        return this.sendRaw(title, room, data, duration, reply, expiredCb);
+    }
+    // Execute named actions sequentially with support for async functions
+    async runraw(map, title, msg) {
+        let currentTitle = title;
+        let depth = 0;
+        const maxDepth = 50;
+        while (currentTitle && depth < maxDepth) {
+            depth++;
+            const handler = map.get(currentTitle);
+            if (!handler) {
+                return;
+            }
+            if (typeof handler === "function") {
+                const next = await handler(msg);
+                currentTitle = typeof next === "string" ? next : "";
+            }
+            else {
+                const replyHandler = handler;
+                this.replyMap.delete(currentTitle);
+                try {
+                    if (replyHandler.action) {
+                        const res = await replyHandler.action(msg);
+                        replyHandler.resolve(res !== undefined ? res : msg);
+                    }
+                    else {
+                        if (msg.title === "error") {
+                            const errMsg = msg.payload?.error || "Server returned an error";
+                            replyHandler.reject(new Error(errMsg));
+                        }
+                        else {
+                            replyHandler.resolve(msg);
+                        }
+                    }
                 }
                 catch (err) {
-                    throw err;
+                    replyHandler.reject(err);
                 }
+                return;
             }
         }
     }
-    // run with reply
+    // Dispatch incoming message to reply handlers and/or named action pipeline
     run(title, msg) {
-        if (msg.reply) {
-            console.log("msg");
-            return this.runraw(this.replyMap, msg.reply, msg);
+        if (msg.reply && this.replyMap.has(msg.reply)) {
+            this.runraw(this.replyMap, msg.reply, msg);
         }
-        else {
-            return this.runraw(this.actionMap, title, msg);
+        if (title && this.actionMap.has(title)) {
+            this.runraw(this.actionMap, title, msg);
         }
+    }
+    // Method to close connection intentionally
+    closeSafe() {
+        this.isIntentionalClose = true;
+        this.autoReconnect = false;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        if (this.socket) {
+            this.socket.close();
+        }
+        this.initialize = false;
+        this.outboundQueue = [];
+        // Reject pending replies
+        for (const reply of this.replyMap.values()) {
+            reply.reject(new Error("WebSocket closed intentionally"));
+        }
+        this.replyMap.clear();
     }
 }
 //# sourceMappingURL=ws.js.map

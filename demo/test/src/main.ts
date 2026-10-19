@@ -10,6 +10,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <button id="sendHello">Send Hello (with reply)</button>
       <button id="sendEcho">Send Echo</button>
       <button id="sendSlowEcho">Send Slow Echo (timeout test)</button>
+      <button id="sendOrderChain" style="background: #238636; color: white; font-weight: bold;">Run Order Chain Pipeline</button>
+      <button id="sendModernRequest" style="background: #1f6feb; color: white; font-weight: bold;">Modern ws.request()</button>
     </div>
 
     <div style="margin-bottom: 10px;">
@@ -113,4 +115,28 @@ document.querySelector('#sendChat')?.addEventListener('click', () => {
   log(`Sending chat message: ${val}`)
   ws.sendRaw('chat', null, val)
   input.value = ''
+})
+
+document.querySelector('#sendOrderChain')?.addEventListener('click', async () => {
+  log('Starting named action chain: "order:create" -> "order:validate" -> "order:finalize"...')
+  try {
+    await ws.sendRaw('order:create', null, 'Wireless Mechanical Keyboard', 3000, (reply) => {
+      log(`Chain completed successfully! Server replied: ${JSON.stringify(reply.payload)}`, 'success')
+      return ""
+    }, () => {
+      log('Order chain request expired!', 'warn')
+    })
+  } catch (e) {
+    log(`Error in order chain: ${e}`, 'error')
+  }
+})
+
+document.querySelector('#sendModernRequest')?.addEventListener('click', async () => {
+  log('Using modern await ws.request("echo", "Async Request-Reply Pattern")...')
+  try {
+    const res = await ws.request('echo', 'Async Request-Reply Pattern', { timeout: 3000 })
+    log(`Direct await resolved! Response: ${JSON.stringify(res.payload)}`, 'success')
+  } catch (e) {
+    log(`ws.request failed: ${e}`, 'error')
+  }
 })
